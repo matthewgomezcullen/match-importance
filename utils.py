@@ -31,16 +31,9 @@ def _generate_match_outcome(c_1: float, c_neg1: float, p: float):
     p_1 = norm.cdf(p - c_1)
     p_0 = norm.cdf(p - c_neg1) - norm.cdf(p - c_1)
     p_neg1 = norm.cdf(c_neg1 - p)
-
     probs = [p_neg1, p_0, p_1]
-
     outcome = np.random.choice([-1, 0, 1], p=probs)
     return outcome
-
-
-def _calculate_p(data, home_team, away_team):
-    # TODO: Implement model for calculating p. Returns 0 for evenly matched teams.
-    return 0
 
 
 def _adjust_standings(standings, match, outcome):
@@ -62,7 +55,8 @@ def run_simulation(
     standings,
     t,
     t_k,
-):
+    tend: int | None = None,
+) -> pd.DataFrame:
     """
     Run a simulation of the remaining matches in the season, exempting the match of interest
 
@@ -71,25 +65,25 @@ def run_simulation(
     standings: DataFrame containing the standings
     t: int representing the current matchday
     t_k: int representing the match of interest
+    tend: int representing the end of the season (default None)
 
     Returns:
     A DataFrame representing the updated standings
     """
+    tend = tend or len(data)
     standings_copy = standings.copy()
-    for i in itertools.chain(range(t + 1, t_k), range(t_k + 1, len(data))):
+    for i in itertools.chain(range(t + 1, t_k), range(t_k + 1, tend)):
         to_simulate = data.iloc[i]
-        home_team = to_simulate["HomeTeam"]
-        away_team = to_simulate["AwayTeam"]
         outcome = _generate_match_outcome(
-            0.5, -0.5, _calculate_p(data, home_team, away_team)
+            0.5, -0.5, to_simulate["TeamEloWinProb"] - 0.5
         )
-        _adjust_standings(standings_copy, to_simulate, outcome)   
+        _adjust_standings(standings_copy, to_simulate, outcome)
     return standings_copy
 
 
 def calculate_outcomes(
-        standings, home: str, away: str
-    ) -> tuple[int, int, int, int, int, int, int, int, int, int, int, int]:
+    standings, home: str, away: str
+) -> tuple[int, int, int, int, int, int, int, int, int, int, int, int]:
     """
     Calculate the outcomes of a tournamnet based on the standings
 
@@ -136,14 +130,15 @@ def calculate_outcomes(
 
 
 def calculate_match_importance(
-        data: pd.DataFrame,
-        t_k: int,
-        t: int,
-        tstart=0,
-        nruns=50,
-        home_col: str="HI",
-        away_col: str="AI",
-    ) -> pd.DataFrame:
+    data: pd.DataFrame,
+    t_k: int,
+    t: int,
+    tstart=0,
+    nruns=50,
+    home_col: str = "HI",
+    away_col: str = "AI",
+    tend: int | None = None
+) -> pd.DataFrame:
     """
     Calculate the importance of a match based on the standings after simulation
 
@@ -155,6 +150,7 @@ def calculate_match_importance(
     nruns: int representing the number of simulations to run (default 50)
     home_col: str representing the home team column (default "HI")
     away_col: str representing the away team column (default "AI")
+    tend: int representing the end of the season (default None)
 
     Returns:
     A float representing the importance of the match
@@ -163,17 +159,40 @@ def calculate_match_importance(
     standings = calculate_standings(data, tstart, t)
     outcomes = []
     for _ in range(nruns):
-        standings = run_simulation(data, standings, t, t_k)
+        standings = run_simulation(data, standings, t, t_k, tend)
         outcomes.append(
-            calculate_outcomes(
-                standings,
-                match["HomeTeam"],
-                match["AwayTeam"]
-            )
+            calculate_outcomes(standings, match["HomeTeam"], match["AwayTeam"])
         )
     outcomes = np.mean(outcomes, axis=0)
     home_importance = max([outcomes[j] - outcomes[j + 6] for j in range(3)])
-    away_importance = max([outcomes[j+6] - outcomes[j] for j in range(3, 6)])
+    away_importance = max([outcomes[j + 6] - outcomes[j] for j in range(3, 6)])
     data.loc[t_k, home_col] = home_importance
     data.loc[t_k, away_col] = away_importance
+    return data
+
+
+def backfill_match_importance(
+    data: pd.DataFrame,
+    tstart: int,
+    tend: int,
+    nruns: int = 50,
+    home_col: str = "HI",
+    away_col: str = "AI",
+) -> pd.DataFrame:
+    """
+    Backfill the match importance for the entire season
+
+    Args:
+    data: DataFrame containing the match data
+    tstart: int representing the start of the season
+    tend: int representing the end of the season
+    nruns: int representing the number of simulations to run (default 50)
+    home_col: str representing the home team column (default "HI")
+    away_col: str representing the away team column (default "AI")
+
+    Returns:
+    A DataFrame containing the match importance
+    """
+    for t in range(tstart, tend):
+        data = calculate_match_importance(data, t, t, tstart, nruns, home_col, away_col, tend)
     return data
