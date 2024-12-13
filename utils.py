@@ -9,97 +9,87 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _initialise_standings(data: pd.DataFrame) -> pd.DataFrame:
-    standings = pd.DataFrame(columns=["Team", "Points"])
-    standings["Team"] = data["HomeTeam"].unique()
-    standings["Points"] = 0
-    return standings
+def _get_home_points(row):
+    if row["FTR"] == "H":
+        return 3
+    elif row["FTR"] == "A":
+        return 0
+    else:
+        return 1
 
 
-def calculate_standings(data: pd.DataFrame, tstart: int, t):
+def _get_away_points(row):
+    if row["FTR"] == "A":
+        return 3
+    elif row["FTR"] == "H":
+        return 0
+    else:
+        return 1
+
+
+def calculate_standings(
+    data: pd.DataFrame,
+    tstart: int = 0,
+    tend: int | None = None,
+    ignore: int | None = None,
+) -> pd.DataFrame:
     """
-    Calculate the standings after a given matchday
+    Calculate the standings of a given season
 
     Args:
     data: DataFrame containing the match data
-    tstart: int representing the start of the season
-    t: int representing the current matchday
+    start: int representing the start of the season (default 0)
+    end: int representing the end of the season (default None)
+    ignore: int representing the match to ignore (default None)
 
     Returns:
-    A DataFrame representing the standings
+    A DataFrame containing the standings
     """
-    standings = _initialise_standings(data)
-
-    for i in range(tstart, t):
-        home_team = data.loc[i, "HomeTeam"]
-        away_team = data.loc[i, "AwayTeam"]
-        home_goals = cast(int, data.loc[i, "FTHG"])
-        away_goals = cast(int, data.loc[i, "FTAG"])
-
-        if home_goals > away_goals:
-            standings.loc[standings["Team"] == home_team, "Points"] += 3
-        elif home_goals < away_goals:
-            standings.loc[standings["Team"] == away_team, "Points"] += 3
-        else:
-            standings.loc[standings["Team"] == home_team, "Points"] += 1
-            standings.loc[standings["Team"] == away_team, "Points"] += 1
-
-    return standings.sort_values(by=["Points"], ascending=False).reset_index(drop=True)
+    if tend is None:
+        tend = len(data)
+    season = data.loc[tstart:tend].copy()
+    teams = set(season["HomeTeam"].unique()).union(set(season["AwayTeam"].unique()))
+    if ignore:
+        season.drop(ignore, inplace=True)
+    season["HomePoints"] = season.apply(_get_home_points, axis=1)
+    season["AwayPoints"] = season.apply(_get_away_points, axis=1)
+    standings = (
+        season.groupby("HomeTeam")["HomePoints"].sum().reindex(teams, fill_value=0) # type: ignore
+        + season.groupby("AwayTeam")["AwayPoints"].sum().reindex(teams, fill_value=0) # type: ignore
+    )
+    standings = standings.sort_values(ascending=False).reset_index()
+    standings.columns = ["Team", "Points"]
+    return standings
 
 
-def _generate_match_outcome(c_1: float, c_neg1: float, p: float):
-    p_1 = norm.cdf(p - c_1)
-    p_0 = norm.cdf(p - c_neg1) - norm.cdf(p - c_1)
-    p_neg1 = norm.cdf(c_neg1 - p)
+def generate_match_outcome(row):
+    p = row["TeamEloWinProb"] - 0.5
+    p_1 = norm.cdf(p - 0.5)
+    p_0 = norm.cdf(p + 0.5) - norm.cdf(p - 0.5)
+    p_neg1 = norm.cdf(-0.5 - p)
     probs = [p_neg1, p_0, p_1]
     outcome = np.random.choice([-1, 0, 1], p=probs)
-    return outcome
+    if outcome == 1:
+        return "H"
+    if outcome == -1:
+        return "A"
+    return "D"
 
 
-def _adjust_standings(standings, match, outcome):
+def adjust_standings(
+    standings: pd.DataFrame, match: pd.Series, outcome: str
+) -> pd.DataFrame:
     home_team = match["HomeTeam"]
     away_team = match["AwayTeam"]
 
-    if outcome == 1:
-        standings.loc[standings["Team"] == home_team, "Points"] += 3
-    elif outcome == 0:
-        standings.loc[standings["Team"] == home_team, "Points"] += 1
-        standings.loc[standings["Team"] == away_team, "Points"] += 1
+    if outcome == "H":
+        standings.loc[standings["Team"] == home_team, "Points"] += 3  # type: ignore
+    elif outcome == "D":
+        standings.loc[standings["Team"] == home_team, "Points"] += 1  # type: ignore
+        standings.loc[standings["Team"] == away_team, "Points"] += 1  # type: ignore
     else:
-        standings.loc[standings["Team"] == away_team, "Points"] += 3
+        standings.loc[standings["Team"] == away_team, "Points"] += 3  # type: ignore
     return standings
-
-
-def run_simulation(
-    data,
-    standings,
-    t,
-    t_k,
-    tend: int | None = None,
-) -> pd.DataFrame:
-    """
-    Run a simulation of the remaining matches in the season, exempting the match of interest
-
-    Args:
-    data: DataFrame containing the match data
-    standings: DataFrame containing the standings
-    t: int representing the current matchday
-    t_k: int representing the match of interest
-    tend: int representing the end of the season (default None)
-
-    Returns:
-    A DataFrame representing the updated standings
-    """
-    tend = tend or len(data)
-    standings_copy = standings.copy()
-    for i in itertools.chain(range(t + 1, t_k), range(t_k + 1, tend)):
-        to_simulate = data.iloc[i]
-        outcome = _generate_match_outcome(
-            0.5, -0.5, to_simulate["TeamEloWinProb"] - 0.5
-        )
-        _adjust_standings(standings_copy, to_simulate, outcome)
-        logger.debug(f"Simulated match {i}")
-    return standings_copy
 
 
 def calculate_outcomes(
@@ -150,6 +140,36 @@ def calculate_outcomes(
     return outcomes
 
 
+def run_simulation(
+    data,
+    standings,
+    t,
+    t_k,
+    tend: int | None = None,
+) -> pd.DataFrame:
+    """
+    Run a simulation of the remaining matches in the season, exempting the match of interest
+
+    Args:
+    data: DataFrame containing the match data
+    standings: DataFrame containing the standings
+    t: int representing the current matchday
+    t_k: int representing the match of interest
+    tend: int representing the end of the season (default None)
+
+    Returns:
+    A DataFrame representing the updated standings
+    """
+    tend = tend or len(data)
+    standings_copy = standings.copy()
+    for i in itertools.chain(range(t + 1, t_k), range(t_k + 1, tend)):
+        to_simulate = data.loc[i]
+        outcome = generate_match_outcome(to_simulate)
+        adjust_standings(standings_copy, to_simulate, outcome)
+        logger.debug(f"Simulated match {i}")
+    return standings_copy
+
+
 def calculate_match_importance(
     data: pd.DataFrame,
     standings: pd.DataFrame | None,
@@ -174,60 +194,19 @@ def calculate_match_importance(
     Returns:
     A float representing the importance of the match
     """
-    match = data.iloc[t_k]
+    match = data.loc[t_k]
     if standings is None:
-        standings = calculate_standings(data, tstart, t)
+        standings = calculate_standings(data)
     else:
         standings = standings.copy()
     outcomes = []
     for _ in range(nruns):
         standings = run_simulation(data, standings, t, t_k, tend)
         outcomes.append(
-            calculate_outcomes(standings, match["HomeTeam"], match["AwayTeam"])
+            calculate_outcomes(standings, match["HomeTeam"], match["AwayTeam"]) # type: ignore
         )
         logger.debug(f"Tournament simulation for {t_k} done")
     outcomes = np.mean(outcomes, axis=0)
     home_importance = max([outcomes[j] - outcomes[j + 6] for j in range(3)])
     away_importance = max([outcomes[j + 6] - outcomes[j] for j in range(3, 6)])
     return home_importance, away_importance
-
-
-def backfill_szn_match_importance(
-    data: pd.DataFrame,
-    tstart: int,
-    tend: int,
-    nruns: int = 50,
-    home_col: str = "HI",
-    away_col: str = "AI",
-) -> pd.DataFrame:
-    """
-    Backfill the match importance for an entire season
-
-    Args:
-    data: DataFrame containing the match data
-    tstart: int representing the start of the season
-    tend: int representing the end of the season
-    nruns: int representing the number of simulations to run (default 50)
-    home_col: str representing the home team column (default "HI")
-    away_col: str representing the away team column (default "AI")
-
-    Returns:
-    A DataFrame containing the match importance
-    """
-    standings = _initialise_standings(data)
-    for t_k in range(tstart, tend):
-        data.loc[t_k, [home_col, away_col]] = calculate_match_importance(  # type: ignore
-            data, standings, t_k, t_k, tstart, nruns, tend
-        )
-        match = data.iloc[t_k]
-        if match["HTR"] == "H":
-            outcome = 1
-        elif match["HTR"] == "A":
-            outcome = -1
-        else:
-            outcome = 0
-        _adjust_standings(standings, match, outcome)
-        logger.info(
-            f"Match {t_k} done: {match['HomeTeam']} vs {match['AwayTeam']}, {match[home_col]}, {match[away_col]}"
-        )
-    return data
