@@ -1,36 +1,43 @@
 import pandas as pd
 import numpy as np
+import sys
+import os
 
-from batch import calculate_match_importance
+sys.path.append(os.path.abspath(os.path.join('src')))
 
-master = pd.read_csv('data/michal-master.csv').drop_duplicates()
-master["Date"] = pd.to_datetime(master["Date"], format="%Y-%m-%d").dt.strftime("%d-%b-%y")
+from importance import backfill
+import elo
 
-all_years = pd.concat(
-    [
-        pd.read_csv(f"data/all_years/{season}.csv")
-        for season in [
-            f"{i}_{i+1}"
-            for i in range(17, 24)
-        ]
-    ]
-)
-all_years["Date"] = pd.to_datetime(all_years["Date"], format="%d/%m/%Y").dt.strftime("%d-%b-%y")
-all_years = all_years.sort_values(by=["Date"]).reset_index(drop=True)
 
-match_importance = all_years.merge(
-    master,
-    on=["Date", "HomeTeam", "AwayTeam"],
-    suffixes=("", "_master"),
-)
-match_importance[["HI", "AI"]] = np.nan
+SEASON_DIR = "data/seasons"
+OUTPUT_DIR = "output"
+PREFIX = "importance"
 
-for i in range(380, len(match_importance)+1, 380):
-    match_importance = calculate_match_importance(
-        data=match_importance,
-        tstart=i-380,
-        tend=i-1,
-        nruns=1000
+if __name__ == "__main__":
+
+    if len(sys.argv) != 2:
+        raise ValueError("Please provide a season argument in the format 'YY_YY'")
+
+    season = sys.argv[1]
+
+    matches = pd.read_csv(f"{SEASON_DIR}/{season}.csv")
+    matches["Date"] = pd.to_datetime(matches["Date"], dayfirst=True).dt.date
+    elos = elo.get(matches)
+    elos["Date"] = pd.to_datetime(elos["Date"]).dt.date
+    elos["HomeTeam"] = elos["HomeTeam"].replace("Forest", "Nott'm Forest")
+    elos["AwayTeam"] = elos["AwayTeam"].replace("Forest", "Nott'm Forest")
+
+    match_importance = matches.merge(
+        elos,
+        on=["Date", "HomeTeam", "AwayTeam"],
+        suffixes=("", "_master"),
     )
+    match_importance[["HI", "AI"]] = np.nan
+    match_importance = match_importance.sort_values("Date")
 
-match_importance.to_csv("data/match_importance.csv", index=False)
+    match_importance = backfill(
+        data=match_importance,
+        nruns=1000
+    )[["Date", "HomeTeam", "AwayTeam", "HomeElo", "AwayElo", "HI", "AI"]]
+
+    match_importance.to_csv(f"{OUTPUT_DIR}/{PREFIX}_{season}.csv", index=False)

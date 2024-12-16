@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-from batch import calculate_match_importance, calculate_standings
+from importance import backfill, calculate_standings
 
 
 EVEN = pd.DataFrame({
@@ -41,10 +41,10 @@ def test_standings_of_matches():
 
 
 def test_match_importance_should_equal_one():
-    match_importance = calculate_match_importance(
+    match_importance = backfill(
         data=EVEN,
-        tstart=0,
-        tend=1,
+        start=0,
+        end=1,
         nruns=100
     )
     assert match_importance.loc[1, "HI"] == 1
@@ -52,10 +52,10 @@ def test_match_importance_should_equal_one():
 
 
 def test_match_importance_should_equal_zero():
-    match_importance = calculate_match_importance(
+    match_importance = backfill(
         data=UNEVEN,
-        tstart=0,
-        tend=2,
+        start=0,
+        end=2,
         nruns=100
     )
     assert match_importance.loc[2, "HI"] == 0

@@ -29,8 +29,8 @@ def _get_away_points(row):
 
 def calculate_standings(
     data: pd.DataFrame,
-    tstart: int = 0,
-    tend: int | None = None,
+    start: int = 0,
+    end: int | None = None,
     ignore: int | None = None,
 ) -> pd.DataFrame:
     """
@@ -45,10 +45,10 @@ def calculate_standings(
     Returns:
     A DataFrame containing the standings
     """
-    if tend is None:
-        tend = len(data)
-    season = data.loc[tstart:tend].copy()
-    teams = set(season["HomeTeam"].unique()).union(set(season["AwayTeam"].unique()))
+    if end is None:
+        end = len(data)
+    season = data.loc[start:end].copy()
+    teams = set(season["HomeTeam"]) | set(season["AwayTeam"])
     if ignore:
         season.drop(ignore, inplace=True)
     season["HomePoints"] = season.apply(_get_home_points, axis=1)
@@ -74,22 +74,6 @@ def generate_match_outcome(row):
     if outcome == -1:
         return "A"
     return "D"
-
-
-def adjust_standings(
-    standings: pd.DataFrame, match: pd.Series, outcome: str
-) -> pd.DataFrame:
-    home_team = match["HomeTeam"]
-    away_team = match["AwayTeam"]
-
-    if outcome == "H":
-        standings.loc[standings["Team"] == home_team, "Points"] += 3  # type: ignore
-    elif outcome == "D":
-        standings.loc[standings["Team"] == home_team, "Points"] += 1  # type: ignore
-        standings.loc[standings["Team"] == away_team, "Points"] += 1  # type: ignore
-    else:
-        standings.loc[standings["Team"] == away_team, "Points"] += 3  # type: ignore
-    return standings
 
 
 def calculate_outcomes(
@@ -140,73 +124,32 @@ def calculate_outcomes(
     return outcomes
 
 
-def run_simulation(
-    data,
-    standings,
-    t,
-    t_k,
-    tend: int | None = None,
-) -> pd.DataFrame:
+
+def generate_simulations(
+    matches: pd.DataFrame,
+    start: int=0,
+    end: int | None=None,
+    nruns: int=1000,
+    current: int=-1
+) -> list[pd.DataFrame]:
     """
-    Run a simulation of the remaining matches in the season, exempting the match of interest
+    Simulate seasons
 
     Args:
-    data: DataFrame containing the match data
-    standings: DataFrame containing the standings
-    t: int representing the current matchday
-    t_k: int representing the match of interest
-    tend: int representing the end of the season (default None)
+    matches: DataFrame containing the match data
+    start: int representing the start of the season (default 0)
+    end: int representing the end of the season (default None)
+    nruns: int representing the number of simulations to run per match (default 1000)
+    current: int representing the current matchday (default -1)
 
     Returns:
-    A DataFrame representing the updated standings
+    A DataFrame containing the simulated seasons
     """
-    tend = tend or len(data)
-    standings_copy = standings.copy()
-    for i in itertools.chain(range(t + 1, t_k), range(t_k + 1, tend)):
-        to_simulate = data.loc[i]
-        outcome = generate_match_outcome(to_simulate)
-        adjust_standings(standings_copy, to_simulate, outcome)
-        logger.debug(f"Simulated match {i}")
-    return standings_copy
-
-
-def calculate_match_importance(
-    data: pd.DataFrame,
-    standings: pd.DataFrame | None,
-    t_k: int,
-    t: int,
-    tstart=0,
-    nruns=50,
-    tend: int | None = None,
-) -> tuple[float, float]:
-    """
-    Calculate the importance of a match based on the standings after simulation
-
-    Args:
-    data: DataFrame containing the match data
-    standings: DataFrame containing the standings. If None, it will be calculated
-    t_k: int representing the index of the match of interest
-    t: int representing the current matchday
-    tstart: int representing the start of the season (default 0)
-    nruns: int representing the number of simulations to run (default 50)
-    tend: int representing the end of the season (default None)
-
-    Returns:
-    A float representing the importance of the match
-    """
-    match = data.loc[t_k]
-    if standings is None:
-        standings = calculate_standings(data)
-    else:
-        standings = standings.copy()
-    outcomes = []
+    simulations = []
+    if end is None:
+        end = len(matches)
     for _ in range(nruns):
-        standings = run_simulation(data, standings, t, t_k, tend)
-        outcomes.append(
-            calculate_outcomes(standings, match["HomeTeam"], match["AwayTeam"]) # type: ignore
-        )
-        logger.debug(f"Tournament simulation for {t_k} done")
-    outcomes = np.mean(outcomes, axis=0)
-    home_importance = max([outcomes[j] - outcomes[j + 6] for j in range(3)])
-    away_importance = max([outcomes[j + 6] - outcomes[j] for j in range(3, 6)])
-    return home_importance, away_importance
+        simulation = matches.loc[start:end].copy()
+        simulation.loc[current+1:, "FTR"] = simulation.apply(generate_match_outcome, axis=1)
+        simulations.append(simulation)
+    return simulations
